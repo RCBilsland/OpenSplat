@@ -145,7 +145,9 @@ project_gaussians_forward_tensor(
     const unsigned img_height,
     const unsigned img_width,
     const std::tuple<int, int, int> tile_bounds,
-    const float clip_thresh
+    const float clip_thresh,
+    int cameraType,
+    const std::vector<float>& fisheyeParams
 ) {
     dim3 img_size_dim3;
     img_size_dim3.x = img_width;
@@ -172,6 +174,11 @@ project_gaussians_forward_tensor(
     torch::Tensor num_tiles_hit_d =
         torch::zeros({num_points}, means3d.options().dtype(torch::kInt32));
 
+    float* fisheyeParams_d = nullptr;
+    if (!fisheyeParams.empty()) {
+        cudaMalloc(&fisheyeParams_d, sizeof(float) * fisheyeParams.size());
+        cudaMemcpy(fisheyeParams_d, fisheyeParams.data(), sizeof(float) * fisheyeParams.size(), cudaMemcpyHostToDevice);
+    }
     project_gaussians_forward_kernel<<<
         (num_points + N_THREADS - 1) / N_THREADS,
         N_THREADS>>>(
@@ -192,8 +199,11 @@ project_gaussians_forward_tensor(
         depths_d.contiguous().data_ptr<float>(),
         radii_d.contiguous().data_ptr<int>(),
         (float3 *)conics_d.contiguous().data_ptr<float>(),
-        num_tiles_hit_d.contiguous().data_ptr<int32_t>()
+        num_tiles_hit_d.contiguous().data_ptr<int32_t>(),
+        cameraType,
+        fisheyeParams_d
     );
+    if (fisheyeParams_d) cudaFree(fisheyeParams_d);
 
     return std::make_tuple(
         cov3d_d, xys_d, depths_d, radii_d, conics_d, num_tiles_hit_d

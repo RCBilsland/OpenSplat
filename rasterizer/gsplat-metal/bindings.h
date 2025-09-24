@@ -54,7 +54,9 @@ project_gaussians_forward_tensor(
     const unsigned img_height,
     const unsigned img_width,
     const std::tuple<int, int, int> tile_bounds,
-    const float clip_thresh
+    const float clip_thresh,
+    int cameraType,
+    const std::vector<float>& fisheyeParams
 );
 
 std::tuple<

@@ -184,6 +184,9 @@ if (OPENSPLAT_BUILD_VISUALIZER)
     find_package(Pangolin REQUIRED)
 endif()
 
+find_package(OpenCV REQUIRED)
+include_directories(${OpenCV_INCLUDE_DIRS})
+
 if (NOT WIN32 AND NOT APPLE)
     set(CMAKE_CUDA_COMPILER "${CUDA_TOOLKIT_ROOT_DIR}/bin/nvcc")
 endif()

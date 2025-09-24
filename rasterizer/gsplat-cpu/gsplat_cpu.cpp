@@ -59,46 +59,96 @@ project_gaussians_forward_tensor_cpu(
     const float cy,
     const unsigned img_height,
     const unsigned img_width,
+    CameraType cameraType,
+    const std::vector<float>& fisheyeParams,
     const float clip_thresh
 ){
-    float fovx = 0.5f * static_cast<float>(img_width) / fx;
-    float fovy = 0.5f * static_cast<float>(img_height) / fy;
-    
-    // clip_near_plane
-    torch::Tensor Rclip = viewmat.index({"...", Slice(None, 3), Slice(None, 3)}); 
+    float fovx = 0.5f * static_cast<float>(img_width) / std::abs(fx);
+    float fovy = 0.5f * static_cast<float>(img_height) / std::abs(fy);
+
+    torch::Tensor Rclip = viewmat.index({"...", Slice(None, 3), Slice(None, 3)});
     torch::Tensor Tclip = viewmat.index({"...", Slice(None, 3), 3});
     torch::Tensor pView = torch::matmul(Rclip, means3d.index({"...", None})).index({"...", 0}) + Tclip;
-    // torch::Tensor isClose = pView.index({"...", 2}) < clip_thresh;
 
     // scale_rot_to_cov3d
     torch::Tensor R = quatToRot(quats);
     torch::Tensor M = R * glob_scale * scales.index({"...", None, Slice()});
     torch::Tensor cov3d = torch::matmul(M, M.transpose(-1, -2));
 
-    // project_cov3d_ewa
+    torch::Tensor xys;
+    torch::Tensor camDepths;
+    if (cameraType == CameraType::Fisheye && fisheyeParams.size() == 4) {
+        // Fisheye projection
+        auto x = means3d.index({Slice(), 0});
+        auto y = means3d.index({Slice(), 1});
+        auto z = means3d.index({Slice(), 2});
+        auto r = torch::sqrt(x * x + y * y);
+        auto theta = torch::atan2(r, z);
+        auto theta2 = theta * theta;
+        auto theta4 = theta2 * theta2;
+        auto theta6 = theta4 * theta2;
+        auto theta8 = theta4 * theta4;
+        float k1 = fisheyeParams[0];
+        float k2 = fisheyeParams[1];
+        float k3 = fisheyeParams[2];
+        float k4 = fisheyeParams[3];
+        auto theta_d = theta * (1 + k1 * theta2 + k2 * theta4 + k3 * theta6 + k4 * theta8);
+        auto scale = torch::where(r > 1e-8, theta_d / r, torch::ones_like(r));
+        auto xd = x * scale;
+        auto yd = y * scale;
+        auto u = fx * xd + cx;
+        auto v = fy * yd + cy;
+        xys = torch::stack({u, v}, -1);
+        camDepths = z;
+    } else {
+        // Perspective (default)
+        torch::Tensor limX = 1.3f * torch::tensor({fovx}, means3d.device());
+        torch::Tensor limY = 1.3f * torch::tensor({fovy}, means3d.device());
+        torch::Tensor minLimX = pView.index({"...", 2}) * torch::min(limX, torch::max(-limX, pView.index({"...", 0}) / pView.index({"...", 2})));
+        torch::Tensor minLimY = pView.index({"...", 2}) * torch::min(limY, torch::max(-limY, pView.index({"...", 1}) / pView.index({"...", 2})));
+        torch::Tensor t = torch::cat({minLimX.index({"...", None}), minLimY.index({"...", None}), pView.index({"...", 2, None})}, -1);
+        torch::Tensor rz = 1.0f / t.index({"...", 2});
+        torch::Tensor rz2 = rz.pow(2);
+        torch::Tensor J = torch::stack({
+            torch::stack({fx * rz, torch::zeros_like(rz), -fx * t.index({"...", 0}) * rz2}, -1),
+            torch::stack({torch::zeros_like(rz), fy * rz, -fy * t.index({"...", 1}) * rz2}, -1)
+        }, -2);
+        torch::Tensor T = torch::matmul(J, Rclip);
+        torch::Tensor cov2d = torch::matmul(T, torch::matmul(cov3d, T.transpose(-1, -2)));
+        cov2d.index_put_({"...", 0, 0}, cov2d.index({"...", 0, 0}) + 0.3f);
+        cov2d.index_put_({"...", 1, 1}, cov2d.index({"...", 1, 1}) + 0.3f);
+        float eps = 1e-6f;
+        torch::Tensor det = cov2d.index({"...", 0, 0}) * cov2d.index({"...", 1, 1}) - cov2d.index({"...", 0, 1}).pow(2);
+        det = torch::clamp_min(det, eps);
+        torch::Tensor conic = torch::stack({
+                cov2d.index({"...", 1, 1}) / det,
+                -cov2d.index({"...", 0, 1}) / det,
+                cov2d.index({"...", 0, 0}) / det
+            }, -1);
+        torch::Tensor b = (cov2d.index({"...", 0, 0}) + cov2d.index({"...", 1, 1})) / 2.0f;
+        torch::Tensor sq = torch::sqrt(torch::clamp_min(b.pow(2) - det, 0.1f));
+        torch::Tensor v1 = b + sq;
+        torch::Tensor v2 = b - sq;
+        torch::Tensor radius = torch::ceil(3.0f * torch::sqrt(torch::max(v1, v2)));
+        torch::Tensor radii = radius.to(torch::kInt32);
+        return std::make_tuple(xys, radii, conic, cov2d, camDepths);
+    }
+    // For now, use perspective cov2d/conic/radius for both types (TODO: update for fisheye)
     torch::Tensor limX = 1.3f * torch::tensor({fovx}, means3d.device());
     torch::Tensor limY = 1.3f * torch::tensor({fovy}, means3d.device());
-    
     torch::Tensor minLimX = pView.index({"...", 2}) * torch::min(limX, torch::max(-limX, pView.index({"...", 0}) / pView.index({"...", 2})));
     torch::Tensor minLimY = pView.index({"...", 2}) * torch::min(limY, torch::max(-limY, pView.index({"...", 1}) / pView.index({"...", 2})));
-    
     torch::Tensor t = torch::cat({minLimX.index({"...", None}), minLimY.index({"...", None}), pView.index({"...", 2, None})}, -1);
     torch::Tensor rz = 1.0f / t.index({"...", 2});
     torch::Tensor rz2 = rz.pow(2);
-
     torch::Tensor J = torch::stack({
         torch::stack({fx * rz, torch::zeros_like(rz), -fx * t.index({"...", 0}) * rz2}, -1),
         torch::stack({torch::zeros_like(rz), fy * rz, -fy * t.index({"...", 1}) * rz2}, -1)
     }, -2);
-
     torch::Tensor T = torch::matmul(J, Rclip);
     torch::Tensor cov2d = torch::matmul(T, torch::matmul(cov3d, T.transpose(-1, -2)));
-
-    // Add blur along axes
     cov2d.index_put_({"...", 0, 0}, cov2d.index({"...", 0, 0}) + 0.3f);
     cov2d.index_put_({"...", 1, 1}, cov2d.index({"...", 1, 1}) + 0.3f);
-     
-    // compute_cov2d_bounds
     float eps = 1e-6f;
     torch::Tensor det = cov2d.index({"...", 0, 0}) * cov2d.index({"...", 1, 1}) - cov2d.index({"...", 0, 1}).pow(2);
     det = torch::clamp_min(det, eps);
@@ -107,26 +157,12 @@ project_gaussians_forward_tensor_cpu(
             -cov2d.index({"...", 0, 1}) / det,
             cov2d.index({"...", 0, 0}) / det
         }, -1);
-
     torch::Tensor b = (cov2d.index({"...", 0, 0}) + cov2d.index({"...", 1, 1})) / 2.0f;
     torch::Tensor sq = torch::sqrt(torch::clamp_min(b.pow(2) - det, 0.1f));
     torch::Tensor v1 = b + sq;
     torch::Tensor v2 = b - sq;
     torch::Tensor radius = torch::ceil(3.0f * torch::sqrt(torch::max(v1, v2)));
-    // torch::Tensor detValid = det > eps;
-
-    // project_pix
-    torch::Tensor pHom = torch::nn::functional::pad(means3d, torch::nn::functional::PadFuncOptions({0, 1}).mode(torch::kConstant).value(1.0f));
-    pHom = torch::einsum("...ij,...j->...i", {projmat, pHom});
-    torch::Tensor rw = 1.0f / torch::clamp_min(pHom.index({"...", 3}), eps);
-    torch::Tensor pProj = pHom.index({"...", Slice(None, 3)}) * rw.index({"...", None});
-    torch::Tensor u = 0.5f * ((pProj.index({"...", 0}) + 1.0f) * static_cast<float>(img_width) - 1.0f);
-    torch::Tensor v = 0.5f * ((pProj.index({"...", 1}) + 1.0f) * static_cast<float>(img_height) - 1.0f);
-    torch::Tensor xys = torch::stack({u, v}, -1); // center
-
     torch::Tensor radii = radius.to(torch::kInt32);
-    torch::Tensor camDepths = pProj.index({"...", 2});
-
     return std::make_tuple(xys, radii, conic, cov2d, camDepths);
 }
 

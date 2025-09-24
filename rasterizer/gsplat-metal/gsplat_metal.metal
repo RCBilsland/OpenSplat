@@ -377,36 +377,33 @@ kernel void project_gaussians_forward_kernel(
     device int* radii,
     device float* conics, // float3
     device int32_t* num_tiles_hit,
+    constant int& cameraType,
+    constant float* fisheyeParams,
+    constant int* tile_bins,
+    constant int* gaussian_ids_sorted,
+    constant float* opacities,
+    device float* out_img,
+    constant float* colors,
+    device float* final_Ts,
+    device int* final_index,
+    constant float* background,
     uint3 gp [[thread_position_in_grid]]
 ) {
     uint idx = gp.x;
-    if (idx >= num_points) {
+    if (idx >= (uint)num_points) {
         return;
     }
-    radii[idx] = 0;
-    num_tiles_hit[idx] = 0;
-
-    float3 p_world = read_packed_float3(means3d, idx);
-    float3 p_view;
-    if (clip_near_plane(p_world, viewmat, p_view, clip_thresh)) {
-        return;
-    }
-
-    // compute the projected covariance
-    float3 scale = read_packed_float3(scales, idx);
-    float4 quat = read_packed_float4(quats, idx);
-    device float *cur_cov3d = &(covs3d[6 * idx]);
-    scale_rot_to_cov3d(scale, glob_scale, quat, cur_cov3d);
-
-    // project to 2d with ewa approximation
     float fx = intrins.x;
     float fy = intrins.y;
     float cx = intrins.z;
     float cy = intrins.w;
+    float3 p_world = read_packed_float3(means3d, idx);
+    float3 p_view;
+    clip_near_plane(p_world, viewmat, p_view, clip_thresh);
     float tan_fovx = 0.5 * img_size.x / fx;
     float tan_fovy = 0.5 * img_size.y / fy;
     float3 cov2d = project_cov3d_ewa(
-        p_world, cur_cov3d, viewmat, fx, fy, tan_fovx, tan_fovy
+        p_world, covs3d + 3 * idx, viewmat, fx, fy, tan_fovx, tan_fovy
     );
 
     float3 conic;
@@ -426,38 +423,74 @@ kernel void project_gaussians_forward_kernel(
         return;
     }
 
-    num_tiles_hit[idx] = tile_area;
-    depths[idx] = p_view.z;
-    radii[idx] = (int)radius;
-    write_packed_float2(xys, idx, center);
-}
-
-kernel void nd_rasterize_forward_kernel(
-    constant uint3& tile_bounds,
-    constant uint3& img_size,
-    constant uint& channels,
-    constant int32_t* gaussian_ids_sorted,
-    constant int* tile_bins, // int2
-    constant float* xys, // float2
-    constant float* conics, // float3
-    constant float* colors,
-    constant float* opacities,
-    device float* final_Ts,
-    device int* final_index,
-    device float* out_img,
-    constant float* background,
-    constant uint2& blockDim, 
-    uint2 blockIdx [[threadgroup_position_in_grid]],
-    uint2 threadIdx [[thread_position_in_threadgroup]]
-) {
-    // current naive implementation where tile data loading is redundant
-    // TODO tile data should be shared between tile threads
-    int32_t tile_id = blockIdx.y * tile_bounds.x + blockIdx.x;
-    int32_t i = blockIdx.y * blockDim.y + threadIdx.y;
-    int32_t j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (cameraType == 2 && fisheyeParams != nullptr) {
+        // Fisheye projection
+        float x = p_world.x;
+        float y = p_world.y;
+        float z = p_world.z;
+        float r = sqrt(x * x + y * y);
+        float theta = atan2(r, z);
+        float theta2 = theta * theta;
+        float theta4 = theta2 * theta2;
+        float theta6 = theta4 * theta2;
+        float theta8 = theta4 * theta4;
+        float k1 = fisheyeParams[0];
+        float k2 = fisheyeParams[1];
+        float k3 = fisheyeParams[2];
+        float k4 = fisheyeParams[3];
+        float theta_d = theta * (1 + k1 * theta2 + k2 * theta4 + k3 * theta6 + k4 * theta8);
+        float scale = (r > 1e-8f) ? (theta_d / r) : 1.0f;
+        float xd = x * scale;
+        float yd = y * scale;
+        float u = fx * xd + cx;
+        float v = fy * yd + cy;
+        write_packed_float2(xys, idx, float2(u, v));
+        depths[idx] = z;
+        // Use perspective code for conic/radius for now
+        float3 cov2d = project_cov3d_ewa(
+            p_world, covs3d + 3 * idx, viewmat, fx, fy, tan_fovx, tan_fovy
+        );
+        float3 conic;
+        float radius;
+        bool ok = compute_cov2d_bounds(cov2d, conic, radius);
+        if (!ok) return;
+        write_packed_float3(conics, idx, conic);
+        uint2 tile_min, tile_max;
+        get_tile_bbox(float2(u, v), radius, (int3)tile_bounds, tile_min, tile_max);
+        int32_t tile_area = (tile_max.x - tile_min.x) * (tile_max.y - tile_min.y);
+        if (tile_area <= 0) return;
+        num_tiles_hit[idx] = tile_area;
+        radii[idx] = (int)radius;
+    } else {
+        // Perspective/default
+        float3 cov2d = project_cov3d_ewa(
+            p_world, covs3d + 3 * idx, viewmat, fx, fy, tan_fovx, tan_fovy
+        );
+        float3 conic;
+        float radius;
+        bool ok = compute_cov2d_bounds(cov2d, conic, radius);
+        if (!ok) return;
+        write_packed_float3(conics, idx, conic);
+        float2 center = project_pix(projmat, p_world, img_size, {cx, cy});
+        uint2 tile_min, tile_max;
+        get_tile_bbox(center, radius, (int3)tile_bounds, tile_min, tile_max);
+        int32_t tile_area = (tile_max.x - tile_min.x) * (tile_max.y - tile_min.y);
+        if (tile_area <= 0) return;
+        num_tiles_hit[idx] = tile_area;
+        depths[idx] = p_view.z;
+        radii[idx] = (int)radius;
+        write_packed_float2(xys, idx, center);
+    }
+    int32_t i = gp.y;
+    int32_t j = gp.x;
     float px = (float)j;
     float py = (float)i;
     int32_t pix_id = i * (int)img_size.x + j;
+
+    // Compute tile index for this pixel
+    int tile_x = j / BLOCK_X;
+    int tile_y = i / BLOCK_Y;
+    int tile_id = tile_y * ((img_size.x + BLOCK_X - 1) / BLOCK_X) + tile_x;
 
     // return if out of bounds
     if (i >= (int)img_size.y || j >= (int)img_size.x) {
@@ -470,9 +503,9 @@ kernel void nd_rasterize_forward_kernel(
 
     // iterate over all gaussians and apply rendering EWA equation (e.q. 2 from
     // paper)
-    int idx;
-    for (idx = range.x; idx < range.y; ++idx) {
-        const int32_t g = gaussian_ids_sorted[idx];
+    int gidx;
+    for (gidx = range.x; gidx < range.y; ++gidx) {
+        const int32_t g = gaussian_ids_sorted[gidx];
         const float3 conic = read_packed_float3(conics, g);
         const float2 center = read_packed_float2(xys, g);
         const float2 delta = {center.x - px, center.y - py};
@@ -502,16 +535,91 @@ kernel void nd_rasterize_forward_kernel(
             break;
         }
         const float vis = alpha * T;
-        for (int c = 0; c < channels; ++c) {
-            out_img[channels * pix_id + c] += colors[channels * g + c] * vis;
+    for (int c = 0; c < CHANNELS; ++c) {
+            out_img[CHANNELS * pix_id + c] += colors[CHANNELS * g + c] * vis;
         }
         T = next_T;
     }
     final_Ts[pix_id] = T; // transmittance at last gaussian in this pixel
     final_index[pix_id] =
-        (idx == range.y)
+    (idx == (uint)range.y)
             ? idx - 1
             : idx; // index of in bin of last gaussian in this pixel
+    for (int c = 0; c < CHANNELS; ++c) {
+    out_img[CHANNELS * pix_id + c] += T * background[c];
+    }
+}
+
+// Minimal stub for nd_rasterize_forward_kernel to allow Metal pipeline to load
+
+// Forward rasterization kernel for ND tiles
+kernel void nd_rasterize_forward_kernel(
+    constant uint3& tile_bounds,
+    constant uint3& img_size,
+    constant uint& channels,
+    constant int32_t* gaussian_ids_sorted,
+    constant int* tile_bins, // int2
+    constant float* xys, // float2
+    constant float* conics, // float3
+    constant float* rgbs,
+    constant float* opacities,
+    constant float* background,
+    device float* final_Ts,
+    device int* final_index,
+    device float* out_img,
+    uint3 blockIdx [[threadgroup_position_in_grid]],
+    uint3 blockDim [[threads_per_threadgroup]],
+    uint3 threadIdx [[thread_position_in_threadgroup]]
+) {
+    // Compute pixel coordinates
+    int32_t tile_id = blockIdx.y * tile_bounds.x + blockIdx.x;
+    uint i = blockIdx.y * blockDim.y + threadIdx.y;
+    uint j = blockIdx.x * blockDim.x + threadIdx.x;
+    float px = (float)j;
+    float py = (float)i;
+    int32_t pix_id = i * img_size.x + j;
+
+    // Return if out of bounds
+    if (i >= img_size.y || j >= img_size.x) {
+        return;
+    }
+
+    // Get the range of gaussians for this tile
+    int2 range = read_packed_int2(tile_bins, tile_id);
+    float3 buffer = {0.f, 0.f, 0.f};
+    float T = 1.f;
+    int idx = range.x;
+    for (; idx < range.y; ++idx) {
+        int32_t g = gaussian_ids_sorted[idx];
+        float3 conic = read_packed_float3(conics, g);
+        float2 center = read_packed_float2(xys, g);
+        float2 delta = {center.x - px, center.y - py};
+        float sigma = 0.5f * (conic.x * delta.x * delta.x + conic.z * delta.y * delta.y) + conic.y * delta.x * delta.y;
+        if (sigma < 0.f) {
+            continue;
+        }
+        float opac = opacities[g];
+        float vis = exp(-sigma);
+        float alpha = min(0.99f, opac * vis);
+        if (alpha < 1.f / 255.f) {
+            continue;
+        }
+        float3 rgb = read_packed_float3(rgbs, g);
+        float fac = alpha * T;
+        for (int c = 0; c < channels; ++c) {
+            out_img[channels * pix_id + c] += fac * rgb[c];
+        }
+        buffer.x += rgb.x * fac;
+        buffer.y += rgb.y * fac;
+        buffer.z += rgb.z * fac;
+        T *= (1.f - alpha);
+        if (T < 1e-4f) {
+            ++idx;
+            break;
+        }
+    }
+    final_Ts[pix_id] = T;
+    final_index[pix_id] = (idx == (int)range.y) ? idx - 1 : idx;
     for (int c = 0; c < channels; ++c) {
         out_img[channels * pix_id + c] += T * background[c];
     }

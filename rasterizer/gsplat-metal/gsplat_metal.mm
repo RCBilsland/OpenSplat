@@ -347,7 +347,9 @@ project_gaussians_forward_tensor(
     const unsigned img_height,
     const unsigned img_width,
     const std::tuple<int, int, int> tile_bounds,
-    const float clip_thresh
+    const float clip_thresh,
+    int cameraType,
+    const std::vector<float>& fisheyeParams
 ) {
     // Triangular covariance.
     torch::Tensor cov3d_d =
@@ -378,6 +380,10 @@ project_gaussians_forward_tensor(
     NSUInteger num_threads_per_group = 
         MIN(ctx->project_gaussians_forward_kernel_cpso.maxTotalThreadsPerThreadgroup, (NSUInteger)num_points);
     MTLSize thread_group_size = MTLSizeMake(num_threads_per_group, 1, 1);
+    float fisheyeParamsArr[4] = {0, 0, 0, 0};
+    if (fisheyeParams.size() >= 4) {
+        for (int i = 0; i < 4; ++i) fisheyeParamsArr[i] = fisheyeParams[i];
+    }
     dispatchKernel(ctx, ctx->project_gaussians_forward_kernel_cpso, grid_size, thread_group_size, {
         EncodeArg::scalar(num_points),
         EncodeArg::tensor(means3d),
@@ -395,7 +401,9 @@ project_gaussians_forward_tensor(
         EncodeArg::tensor(depths_d),
         EncodeArg::tensor(radii_d),
         EncodeArg::tensor(conics_d),
-        EncodeArg::tensor(num_tiles_hit_d)
+        EncodeArg::tensor(num_tiles_hit_d),
+        EncodeArg::scalar(cameraType),
+        EncodeArg::array(fisheyeParamsArr, sizeof(fisheyeParamsArr))
     });
     
     return std::make_tuple(

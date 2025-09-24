@@ -16,6 +16,8 @@ variable_list ProjectGaussians::forward(AutogradContext *ctx,
                 int imgHeight,
                 int imgWidth,
                 TileBounds tileBounds,
+                int cameraType,
+                const std::vector<float>& fisheyeParams,
                 float clipThresh
             ){
     
@@ -23,7 +25,7 @@ variable_list ProjectGaussians::forward(AutogradContext *ctx,
 
     auto t = project_gaussians_forward_tensor(numPoints, means, scales, globScale,
                                               quats, viewMat, projMat, fx, fy,
-                                              cx, cy, imgHeight, imgWidth, tileBounds, clipThresh);
+                                              cx, cy, imgHeight, imgWidth, tileBounds, clipThresh, cameraType, fisheyeParams);
     torch::Tensor cov3d = std::get<0>(t);
     torch::Tensor xys = std::get<1>(t);
     torch::Tensor depths = std::get<2>(t);
@@ -104,20 +106,18 @@ variable_list ProjectGaussiansCPU::apply(
                 float cy,
                 int imgHeight,
                 int imgWidth,
+                CameraType cameraType,
+                const std::vector<float>& fisheyeParams,
                 float clipThresh
             ){
-    
     int numPoints = means.size(0);
-
     auto t = project_gaussians_forward_tensor_cpu(numPoints, means, scales, globScale,
                                               quats, viewMat, projMat, fx, fy,
-                                              cx, cy, imgHeight, imgWidth, clipThresh);
-                                              
+                                              cx, cy, imgHeight, imgWidth, cameraType, fisheyeParams, clipThresh);
     torch::Tensor xys = std::get<0>(t);
     torch::Tensor radii = std::get<1>(t);
     torch::Tensor conics = std::get<2>(t);
     torch::Tensor cov2d = std::get<3>(t);
     torch::Tensor camDepths = std::get<4>(t);
-
     return { xys, radii, conics, cov2d, camDepths };
 }

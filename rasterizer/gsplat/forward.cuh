@@ -25,7 +25,9 @@ __global__ void project_gaussians_forward_kernel(
     float* __restrict__ depths,
     int* __restrict__ radii,
     float3* __restrict__ conics,
-    int32_t* __restrict__ num_tiles_hit
+    int32_t* __restrict__ num_tiles_hit,
+    int cameraType,
+    const float* __restrict__ fisheyeParams // length 4 if fisheye
 );
 
 // compute output color image from binned and sorted gaussians

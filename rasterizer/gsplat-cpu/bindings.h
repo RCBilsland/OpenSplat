@@ -3,6 +3,8 @@
 // Licensed under the AGPLv3
 // Piero Toffanin - 2024
 
+
+#include "../../input_data.hpp"
 #include <cstdio>
 #include <iostream>
 #include <vector>
@@ -30,6 +32,8 @@ project_gaussians_forward_tensor_cpu(
     const float cy,
     const unsigned img_height,
     const unsigned img_width,
+    CameraType cameraType,
+    const std::vector<float>& fisheyeParams,
     const float clip_thresh
 );
 

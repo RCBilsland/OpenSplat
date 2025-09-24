@@ -42,7 +42,7 @@ InputData inputDataFromColmap(const std::string &projectRoot, const std::string&
         CameraModel model = static_cast<CameraModel>(readBinary<int>(camf)); // model ID
         cam->width = readBinary<uint64_t>(camf);
         cam->height = readBinary<uint64_t>(camf);
-        
+
         if (model == SimplePinhole){
             cam->fx = readBinary<double>(camf);
             cam->fy = cam->fx;
@@ -68,6 +68,18 @@ InputData inputDataFromColmap(const std::string &projectRoot, const std::string&
             cam->k2 = readBinary<double>(camf);
             cam->p1 = readBinary<double>(camf);
             cam->p2 = readBinary<double>(camf);
+        }else if (model == OpenCVFisheye || model == SimpleRadialFisheye || model == RadialFisheye || model == ThinPrismFisheye) {
+            // Fisheye models: read fx, fy, cx, cy, k1, k2, k3, k4
+            cam->fx = readBinary<double>(camf);
+            cam->fy = readBinary<double>(camf);
+            cam->cx = readBinary<double>(camf);
+            cam->cy = readBinary<double>(camf);
+            float k1 = readBinary<double>(camf);
+            float k2 = readBinary<double>(camf);
+            float k3 = readBinary<double>(camf);
+            float k4 = readBinary<double>(camf);
+            cam->cameraType = CameraType::Fisheye;
+            cam->fisheyeParams = {k1, k2, k3, k4};
         }else{
             throw std::runtime_error("Unsupported camera model: " + std::to_string(model));
         }

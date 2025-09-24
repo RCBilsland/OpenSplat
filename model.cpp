@@ -132,7 +132,9 @@ torch::Tensor Model::forward(Camera& cam, int step){
                                 cx,
                                 cy,
                                 height,
-                                width);
+                                width,
+                                cam.cameraType,
+                                cam.fisheyeParams);
         xys = p[0];
         radii = p[1];
         conics = p[2];
@@ -144,19 +146,21 @@ torch::Tensor Model::forward(Camera& cam, int step){
         TileBounds tileBounds = std::make_tuple((width + BLOCK_X - 1) / BLOCK_X,
                         (height + BLOCK_Y - 1) / BLOCK_Y,
                         1);
-        auto p = ProjectGaussians::apply(means, 
-                        torch::exp(scales), 
-                        1, 
-                        quats / quats.norm(2, {-1}, true), 
-                        viewMat, 
-                        torch::matmul(projMat, viewMat),
-                        fx, 
-                        fy,
-                        cx,
-                        cy,
-                        height,
-                        width,
-                        tileBounds);
+    auto p = ProjectGaussians::forward(nullptr, means, 
+            torch::exp(scales), 
+            1, 
+            quats / quats.norm(2, {-1}, true), 
+            viewMat, 
+            torch::matmul(projMat, viewMat),
+            fx, 
+            fy,
+            cx,
+            cy,
+            height,
+            width,
+            tileBounds,
+            cam.cameraType,
+            cam.fisheyeParams);
 
         xys = p[0];
         depths = p[1];
@@ -257,8 +261,13 @@ void Model::addToOptimizer(torch::optim::Adam *optimizer, const torch::Tensor &n
 #else
     auto pId = c10::guts::to_string(param.unsafeGetTensorImpl());
 #endif
+    // Debug print and check for key existence
+    std::cout << "[addToOptimizer] Accessing optimizer state with pId: " << pId << std::endl;
+    if (optimizer->state().count(pId) == 0) {
+        std::cerr << "[addToOptimizer] ERROR: pId not found in optimizer state!" << std::endl;
+    }
     auto paramState = std::make_unique<torch::optim::AdamParamState>(static_cast<torch::optim::AdamParamState&>(*optimizer->state()[pId]));
-    
+
     std::vector<int64_t> repeats;
     repeats.push_back(nSamples);
     for (long int i = 0; i < paramState->exp_avg().dim() - 1; i++){
@@ -269,12 +278,13 @@ void Model::addToOptimizer(torch::optim::Adam *optimizer, const torch::Tensor &n
         paramState->exp_avg(), 
         torch::zeros_like(paramState->exp_avg().index({idcs.squeeze()})).repeat(repeats)
     }, 0));
-    
+
     paramState->exp_avg_sq(torch::cat({
         paramState->exp_avg_sq(), 
         torch::zeros_like(paramState->exp_avg_sq().index({idcs.squeeze()})).repeat(repeats)
     }, 0));
 
+    std::cout << "[addToOptimizer] Erasing optimizer state for pId: " << pId << std::endl;
     optimizer->state().erase(pId);
 
 #if TORCH_VERSION_MAJOR == 2 && TORCH_VERSION_MINOR > 1
@@ -282,6 +292,10 @@ void Model::addToOptimizer(torch::optim::Adam *optimizer, const torch::Tensor &n
 #else
     auto newPId = c10::guts::to_string(newParam.unsafeGetTensorImpl());
 #endif    
+    std::cout << "[addToOptimizer] Inserting new optimizer state for newPId: " << newPId << std::endl;
+    if (optimizer->state().count(newPId) != 0) {
+        std::cerr << "[addToOptimizer] WARNING: newPId already exists in optimizer state!" << std::endl;
+    }
     optimizer->state()[newPId] = std::move(paramState);
     optimizer->param_groups()[0].params()[0] = newParam;
 }
@@ -293,17 +307,26 @@ void Model::removeFromOptimizer(torch::optim::Adam *optimizer, const torch::Tens
 #else
     auto pId = c10::guts::to_string(param.unsafeGetTensorImpl());
 #endif
+    std::cout << "[removeFromOptimizer] Accessing optimizer state with pId: " << pId << std::endl;
+    if (optimizer->state().count(pId) == 0) {
+        std::cerr << "[removeFromOptimizer] ERROR: pId not found in optimizer state!" << std::endl;
+    }
     auto paramState = std::make_unique<torch::optim::AdamParamState>(static_cast<torch::optim::AdamParamState&>(*optimizer->state()[pId]));
 
     paramState->exp_avg(paramState->exp_avg().index({~deletedMask}));
     paramState->exp_avg_sq(paramState->exp_avg_sq().index({~deletedMask}));
 
+    std::cout << "[removeFromOptimizer] Erasing optimizer state for pId: " << pId << std::endl;
     optimizer->state().erase(pId);
 #if TORCH_VERSION_MAJOR == 2 && TORCH_VERSION_MINOR > 1
     auto newPId = newParam.unsafeGetTensorImpl();
 #else
     auto newPId = c10::guts::to_string(newParam.unsafeGetTensorImpl());
 #endif
+    std::cout << "[removeFromOptimizer] Inserting new optimizer state for newPId: " << newPId << std::endl;
+    if (optimizer->state().count(newPId) != 0) {
+        std::cerr << "[removeFromOptimizer] WARNING: newPId already exists in optimizer state!" << std::endl;
+    }
     optimizer->param_groups()[0].params()[0] = newParam;
     optimizer->state()[newPId] = std::move(paramState);
 }

@@ -68,18 +68,26 @@ void Camera::loadImage(float downscaleFactor){
     K = getIntrinsicsMatrix();
     cv::Rect roi;
 
-    if (hasDistortionParameters()){
-        // Undistort
+    if (cameraType == CameraType::Fisheye && fisheyeParams.size() == 4) {
+        // OpenCV fisheye undistortion
+        cv::Mat cK = floatNxNtensorToMat(K);
+        cv::Mat D(1, 4, CV_32F);
+        for (int i = 0; i < 4; ++i) D.at<float>(0, i) = fisheyeParams[i];
+        cv::Mat undistorted;
+        cv::fisheye::undistortImage(cImg, undistorted, cK, D, cK);
+        roi = cv::Rect(0, 0, undistorted.cols, undistorted.rows);
+        image = imageToTensor(undistorted);
+        K = floatNxNMatToTensor(cK);
+    } else if (hasDistortionParameters()) {
+        // Standard distortion
         std::vector<float> distCoeffs = undistortionParameters();
         cv::Mat cK = floatNxNtensorToMat(K);
         cv::Mat newK = cv::getOptimalNewCameraMatrix(cK, distCoeffs, cv::Size(cImg.cols, cImg.rows), 0, cv::Size(), &roi);
-
         cv::Mat undistorted = cv::Mat::zeros(cImg.rows, cImg.cols, cImg.type());
         cv::undistort(cImg, undistorted, cK, distCoeffs, newK);
-        
         image = imageToTensor(undistorted);
         K = floatNxNMatToTensor(newK);
-    }else{
+    } else {
         roi = cv::Rect(0, 0, cImg.cols, cImg.rows);
         image = imageToTensor(cImg);
     }

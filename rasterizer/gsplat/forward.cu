@@ -43,58 +43,88 @@ __global__ void project_gaussians_forward_kernel(
     num_tiles_hit[idx] = 0;
 
     float3 p_world = means3d[idx];
-    // printf("p_world %d %.2f %.2f %.2f\n", idx, p_world.x, p_world.y,
-    // p_world.z);
     float3 p_view;
     if (clip_near_plane(p_world, viewmat, p_view, clip_thresh)) {
-        // printf("%d is out of frustum z %.2f, returning\n", idx, p_view.z);
         return;
     }
-    // printf("p_view %d %.2f %.2f %.2f\n", idx, p_view.x, p_view.y, p_view.z);
 
-    // compute the projected covariance
     float3 scale = scales[idx];
     float4 quat = quats[idx];
-    // printf("%d scale %.2f %.2f %.2f\n", idx, scale.x, scale.y, scale.z);
-    // printf("%d quat %.2f %.2f %.2f %.2f\n", idx, quat.w, quat.x, quat.y,
-    // quat.z);
     float *cur_cov3d = &(covs3d[6 * idx]);
     scale_rot_to_cov3d(scale, glob_scale, quat, cur_cov3d);
 
-    // project to 2d with ewa approximation
     float fx = intrins.x;
     float fy = intrins.y;
     float cx = intrins.z;
     float cy = intrins.w;
     float tan_fovx = 0.5 * img_size.x / fx;
     float tan_fovy = 0.5 * img_size.y / fy;
-    float3 cov2d = project_cov3d_ewa(
-        p_world, cur_cov3d, viewmat, fx, fy, tan_fovx, tan_fovy
-    );
-    // printf("cov2d %d, %.2f %.2f %.2f\n", idx, cov2d.x, cov2d.y, cov2d.z);
 
-    float3 conic;
-    float radius;
-    bool ok = compute_cov2d_bounds(cov2d, conic, radius);
-    if (!ok)
-        return; // zero determinant
-    // printf("conic %d %.2f %.2f %.2f\n", idx, conic.x, conic.y, conic.z);
-    conics[idx] = conic;
-
-    // compute the projected mean
-    float2 center = project_pix(projmat, p_world, img_size, {cx, cy});
-    uint2 tile_min, tile_max;
-    get_tile_bbox(center, radius, tile_bounds, tile_min, tile_max);
-    int32_t tile_area = (tile_max.x - tile_min.x) * (tile_max.y - tile_min.y);
-    if (tile_area <= 0) {
-        // printf("%d point bbox outside of bounds\n", idx);
-        return;
+    // Fisheye support
+    if (cameraType == 2 && fisheyeParams != nullptr) { // 2 = Fisheye
+        // Fisheye projection math (CPU reference)
+        float x = p_world.x;
+        float y = p_world.y;
+        float z = p_world.z;
+        float r = sqrtf(x * x + y * y);
+        float theta = atan2f(r, z);
+        float theta2 = theta * theta;
+        float theta4 = theta2 * theta2;
+        float theta6 = theta4 * theta2;
+        float theta8 = theta4 * theta4;
+        float k1 = fisheyeParams[0];
+        float k2 = fisheyeParams[1];
+        float k3 = fisheyeParams[2];
+        float k4 = fisheyeParams[3];
+        float theta_d = theta * (1 + k1 * theta2 + k2 * theta4 + k3 * theta6 + k4 * theta8);
+        float scale = (r > 1e-8f) ? (theta_d / r) : 1.0f;
+        float xd = x * scale;
+        float yd = y * scale;
+        float u = fx * xd + cx;
+        float v = fy * yd + cy;
+        xys[idx] = make_float2(u, v);
+        depths[idx] = z;
+        // For now, use perspective code for conic/radius (TODO: fisheye cov)
+        float3 cov2d = project_cov3d_ewa(
+            p_world, cur_cov3d, viewmat, fx, fy, tan_fovx, tan_fovy
+        );
+        float3 conic;
+        float radius;
+        bool ok = compute_cov2d_bounds(cov2d, conic, radius);
+        if (!ok)
+            return;
+        conics[idx] = conic;
+        uint2 tile_min, tile_max;
+        get_tile_bbox(make_float2(u, v), radius, tile_bounds, tile_min, tile_max);
+        int32_t tile_area = (tile_max.x - tile_min.x) * (tile_max.y - tile_min.y);
+        if (tile_area <= 0) {
+            return;
+        }
+        num_tiles_hit[idx] = tile_area;
+        radii[idx] = (int)radius;
+    } else {
+        // Perspective/default
+        float3 cov2d = project_cov3d_ewa(
+            p_world, cur_cov3d, viewmat, fx, fy, tan_fovx, tan_fovy
+        );
+        float3 conic;
+        float radius;
+        bool ok = compute_cov2d_bounds(cov2d, conic, radius);
+        if (!ok)
+            return;
+        conics[idx] = conic;
+        float2 center = project_pix(projmat, p_world, img_size, {cx, cy});
+        uint2 tile_min, tile_max;
+        get_tile_bbox(center, radius, tile_bounds, tile_min, tile_max);
+        int32_t tile_area = (tile_max.x - tile_min.x) * (tile_max.y - tile_min.y);
+        if (tile_area <= 0) {
+            return;
+        }
+        num_tiles_hit[idx] = tile_area;
+        depths[idx] = p_view.z;
+        radii[idx] = (int)radius;
+        xys[idx] = center;
     }
-
-    num_tiles_hit[idx] = tile_area;
-    depths[idx] = p_view.z;
-    radii[idx] = (int)radius;
-    xys[idx] = center;
     // printf(
     //     "point %d x %.2f y %.2f z %.2f, radius %d, # tiles %d, tile_min %d
     //     %d, tile_max %d %d\n", idx, center.x, center.y, depths[idx],

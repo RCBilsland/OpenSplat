@@ -12,20 +12,22 @@ using namespace torch::autograd;
 class ProjectGaussians : public Function<ProjectGaussians>{
 public:
     static variable_list forward(AutogradContext *ctx, 
-            torch::Tensor means,
-            torch::Tensor scales,
-            float globScale,
-            torch::Tensor quats,
-            torch::Tensor viewMat,
-            torch::Tensor projMat,
-            float fx,
-            float fy,
-            float cx,
-            float cy,
-            int imgHeight,
-            int imgWidth,
-            TileBounds tileBounds,
-            float clipThresh = 0.01);
+        torch::Tensor means,
+        torch::Tensor scales,
+        float globScale,
+        torch::Tensor quats,
+        torch::Tensor viewMat,
+        torch::Tensor projMat,
+        float fx,
+        float fy,
+        float cx,
+        float cy,
+        int imgHeight,
+        int imgWidth,
+        TileBounds tileBounds,
+        int cameraType,
+        const std::vector<float>& fisheyeParams,
+        float clipThresh = 0.01);
     static tensor_list backward(AutogradContext *ctx, tensor_list grad_outputs);
 };
 
@@ -34,19 +36,21 @@ public:
 class ProjectGaussiansCPU{
 public:
     static variable_list apply( 
-            torch::Tensor means,
-            torch::Tensor scales,
-            float globScale,
-            torch::Tensor quats,
-            torch::Tensor viewMat,
-            torch::Tensor projMat,
-            float fx,
-            float fy,
-            float cx,
-            float cy,
-            int imgHeight,
-            int imgWidth,
-            float clipThresh = 0.01);
+        torch::Tensor means,
+        torch::Tensor scales,
+        float globScale,
+        torch::Tensor quats,
+        torch::Tensor viewMat,
+        torch::Tensor projMat,
+        float fx,
+        float fy,
+        float cx,
+        float cy,
+        int imgHeight,
+        int imgWidth,
+        CameraType cameraType,
+        const std::vector<float>& fisheyeParams = {},
+        float clipThresh = 0.01);
 };
 
 

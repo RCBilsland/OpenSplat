@@ -111,7 +111,14 @@ InputData inputDataFromOpenSfM(const std::string &projectRoot){
         Shot shot = s.second;
         
         Cam &c = cameras[shot.camera];
-        if (c.projectionType != "perspective" && c.projectionType != "brown"){
+        CameraType camType = CameraType::Perspective;
+        std::vector<float> fisheyeParams;
+        if (c.projectionType == "perspective" || c.projectionType == "brown") {
+            camType = CameraType::Perspective;
+        } else if (c.projectionType == "fisheye" || c.projectionType == "fisheye_opencv") {
+            camType = CameraType::Fisheye;
+            fisheyeParams = {static_cast<float>(c.k1), static_cast<float>(c.k2), static_cast<float>(c.k3), static_cast<float>(c.p1)}; // p1 as k4 if present
+        } else {
             throw std::runtime_error("Camera projection type " + c.projectionType + " is not supported");
         }
 
@@ -121,8 +128,7 @@ InputData inputDataFromOpenSfM(const std::string &projectRoot){
                             static_cast<float>(static_cast<float>(c.width) / 2.0f + normalizer * c.cx), static_cast<float>(static_cast<float>(c.height) / 2.0f + normalizer * c.cy), 
                             static_cast<float>(c.k1), static_cast<float>(c.k2), static_cast<float>(c.k3), 
                             static_cast<float>(c.p1), static_cast<float>(c.p2),  
-                            
-                            poses[i++], images[filename]));
+                            poses[i++], images[filename], camType, fisheyeParams));
     }
 
     size_t numPoints = points.size();

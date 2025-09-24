@@ -1,14 +1,13 @@
 #ifndef INPUTDATA_H
 #define INPUTDATA_H
 
-#include <iostream>
 #include <string>
 #include <fstream>
 #include <unordered_map>
 #include <opencv2/calib3d.hpp>
 #include <torch/torch.h>
 
-enum CameraType { Perspective };
+enum CameraType { Perspective, Fisheye };
 struct Camera{
     int id = -1;
     int width = 0;
@@ -25,14 +24,19 @@ struct Camera{
     torch::Tensor camToWorld;
     std::string filePath = "";
     CameraType cameraType = CameraType::Perspective;
+    // Fisheye parameters (OpenCV model)
+    // If cameraType == Fisheye, use these for projection
+    std::vector<float> fisheyeParams; // [k1, k2, k3, k4] for OpenCV fisheye
 
     Camera(){};
     Camera(int width, int height, float fx, float fy, float cx, float cy, 
         float k1, float k2, float k3, float p1, float p2,
-        const torch::Tensor &camToWorld, const std::string &filePath) : 
-        width(width), height(height), fx(fx), fy(fy), cx(cx), cy(cy), 
+        const torch::Tensor &camToWorld, const std::string &filePath,
+        CameraType cameraType = CameraType::Perspective,
+        const std::vector<float>& fisheyeParams = {}) :
+        width(width), height(height), fx(fx), fy(fy), cx(cx), cy(cy),
         k1(k1), k2(k2), k3(k3), p1(p1), p2(p2),
-        camToWorld(camToWorld), filePath(filePath) {}
+        camToWorld(camToWorld), filePath(filePath), cameraType(cameraType), fisheyeParams(fisheyeParams) {}
     torch::Tensor getIntrinsicsMatrix();
     bool hasDistortionParameters();
     std::vector<float> undistortionParameters();
