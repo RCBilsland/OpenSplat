@@ -93,6 +93,7 @@ torch::Tensor floatNxNMatToTensor(const cv::Mat &m){
 }
 
 cv::Mat tensorToImage(const torch::Tensor &t){
+<<<<<<< Updated upstream
     try {
         // Initial tensor validation
         if (!t.defined()) {
@@ -147,6 +148,25 @@ cv::Mat tensorToImage(const torch::Tensor &t){
     } catch (const std::exception& e) {
         throw std::runtime_error("tensorToImage failed: " + std::string(e.what()));
     }
+=======
+    if (t.dim() != 3) {
+        throw std::runtime_error("Image tensor must be 3-dimensional (height x width x channels)");
+    }
+    
+    int h = t.size(0);
+    int w = t.size(1);
+    int c = t.size(2);
+
+    if (c != 3) {
+        throw std::runtime_error("Image tensor must have 3 channels (RGB)");
+    }
+
+    cv::Mat image(h, w, CV_8UC3);
+    torch::Tensor scaledTensor = (t * 255.0).clamp(0, 255).to(torch::kU8).contiguous();
+    std::memcpy(image.data, scaledTensor.data_ptr(), h * w * c * sizeof(uint8_t));
+
+    return image;
+>>>>>>> Stashed changes
 }
 
 torch::Tensor imageToTensor(const cv::Mat &image){

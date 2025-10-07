@@ -73,16 +73,36 @@ void Camera::loadImage(float downscaleFactor){
                   << cImg.cols << "x" << cImg.rows 
                   << ", Channels: " << cImg.channels()
                   << ", Type: " << cImg.type() << std::endl;
+<<<<<<< Updated upstream
     // Additional validation and logging
+=======
+    if (cImg.empty()) {
+        throw std::runtime_error("Failed to load image: " + filePath);
+    }
+    if (cImg.cols == 0 || cImg.rows == 0) {
+        throw std::runtime_error("Loaded image has invalid dimensions: " + filePath);
+    }
+    if (cImg.channels() != 3) {
+        throw std::runtime_error("Image must have 3 channels (RGB): " + filePath);
+    }
+>>>>>>> Stashed changes
     if (!cImg.isContinuous()) {
         cv::Mat temp;
         cImg.copyTo(temp);
         cImg = temp;
     }
 
+<<<<<<< Updated upstream
     std::cout << "Successfully loaded image " << filePath 
               << " with dimensions " << cImg.cols << "x" << cImg.rows 
               << "x" << cImg.channels() << std::endl;
+=======
+    log.str("");
+    log << "Successfully loaded image " << filePath 
+        << " with dimensions " << cImg.cols << "x" << cImg.rows 
+        << "x" << cImg.channels() << std::endl;
+    std::cout << log.str();
+>>>>>>> Stashed changes
     
     float rescaleF = 1.0f;
     // If camera intrinsics don't match the image dimensions 
@@ -116,6 +136,7 @@ void Camera::loadImage(float downscaleFactor){
     K = getIntrinsicsMatrix();
     cv::Rect roi;
 
+<<<<<<< Updated upstream
     try {
         if (hasDistortionParameters()){
             cv::Mat cK = floatNxNtensorToMat(K);
@@ -134,12 +155,39 @@ void Camera::loadImage(float downscaleFactor){
                 newK = cv::getOptimalNewCameraMatrix(cK, distCoeffs, cv::Size(cImg.cols, cImg.rows), 0, cv::Size(), &roi);
                 cv::undistort(cImg, undistorted, cK, distCoeffs, newK);
             }
+=======
+    if (hasDistortionParameters()){
+        cv::Mat cK = floatNxNtensorToMat(K);
+        cv::Mat undistorted = cv::Mat::zeros(cImg.rows, cImg.cols, cImg.type());
+        cv::Mat newK = cv::Mat::eye(3, 3, CV_32F);
+
+        // Undistort based on camera type
+        if (cameraType == CameraType::Fisheye) {
+            std::vector<float> distCoeffs = undistortionParameters(true);
+            cv::fisheye::estimateNewCameraMatrixForUndistortRectify(
+                cK, distCoeffs, cv::Size(cImg.cols, cImg.rows), cv::Mat::eye(3, 3, CV_32F), 
+                newK, 1.0, cv::Size(cImg.cols, cImg.rows));
+            cv::fisheye::undistortImage(cImg, undistorted, cK, distCoeffs, newK);
+        } else {
+            std::vector<float> distCoeffs = undistortionParameters(false);
+            newK = cv::getOptimalNewCameraMatrix(cK, distCoeffs, cv::Size(cImg.cols, cImg.rows), 0, cv::Size(), &roi);
+            cv::undistort(cImg, undistorted, cK, distCoeffs, newK);
+        }
+
+        image = imageToTensor(undistorted);
+        K = floatNxNMatToTensor(newK);
+    }else{
+        roi = cv::Rect(0, 0, cImg.cols, cImg.rows);
+        image = imageToTensor(cImg);
+    }
+>>>>>>> Stashed changes
 
             // Verify undistorted image
             if (undistorted.empty() || undistorted.cols == 0 || undistorted.rows == 0) {
                 throw std::runtime_error("Undistortion produced invalid image");
             }
 
+<<<<<<< Updated upstream
             image = imageToTensor(undistorted);
             if (!image.defined() || image.numel() == 0) {
                 throw std::runtime_error("Tensor creation from undistorted image failed");
@@ -278,6 +326,94 @@ torch::Tensor Camera::getImage(int downscaleFactor) {
             throw std::runtime_error("Resize operation produced invalid image");
         }
 
+=======
+    try {
+        // Update parameters
+        height = image.size(0);
+        width = image.size(1);
+        fx = K[0][0].item<float>();
+        fy = K[1][1].item<float>();
+        cx = K[0][2].item<float>();
+        cy = K[1][2].item<float>();
+
+        // Comprehensive tensor validation
+        if (!image.defined()) {
+            throw std::runtime_error("Tensor is undefined");
+        }
+        if (image.numel() == 0) {
+            throw std::runtime_error("Tensor has zero elements");
+        }
+        if (image.dim() != 3) {
+            throw std::runtime_error("Tensor dimension is " + std::to_string(image.dim()) + ", expected 3");
+        }
+        if (image.size(0) == 0 || image.size(1) == 0 || image.size(2) != 3) {
+            throw std::runtime_error("Invalid tensor dimensions: [" + 
+                std::to_string(image.size(0)) + ", " + 
+                std::to_string(image.size(1)) + ", " + 
+                std::to_string(image.size(2)) + "]");
+        }
+
+        // Verify tensor values
+        auto minmax = image.aminmax();
+        if (minmax.first.item<float>() < 0.0f || minmax.second.item<float>() > 1.0f) {
+            throw std::runtime_error("Tensor values out of range [0,1]");
+        }
+
+        std::cout << "Final tensor validation for " << filePath << ":\n"
+                  << "  Dimensions: [" << image.size(0) << ", " 
+                  << image.size(1) << ", " << image.size(2) << "]\n"
+                  << "  Elements: " << image.numel() << "\n"
+                  << "  Value range: [" << minmax.first.item<float>() 
+                  << ", " << minmax.second.item<float>() << "]" << std::endl;
+
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Tensor validation failed: " + std::string(e.what()));
+    }
+}
+
+torch::Tensor Camera::getImage(int downscaleFactor){
+    // First verify that we have a valid image
+    if (image.numel() == 0 || image.size(0) == 0 || image.size(1) == 0) {
+        throw std::runtime_error("Invalid image: image has not been loaded or has zero dimensions");
+    }
+
+    if (downscaleFactor <= 1) return image;
+    
+    // Check if we already have this scale in our pyramid
+    if (imagePyramids.find(downscaleFactor) != imagePyramids.end()){
+        return imagePyramids[downscaleFactor];
+    }
+
+    // Convert tensor to OpenCV image
+    cv::Mat cImg = tensorToImage(image);
+    
+    // Verify the OpenCV image is valid
+    if (cImg.empty() || cImg.cols == 0 || cImg.rows == 0) {
+        throw std::runtime_error("Failed to convert tensor to OpenCV image");
+    }
+    
+    // Calculate new dimensions and verify they are valid
+    int newWidth = cImg.cols / downscaleFactor;
+    int newHeight = cImg.rows / downscaleFactor;
+    
+    // Make sure the resulting image won't be too small
+    if (newWidth < 32 || newHeight < 32) {
+        std::cerr << "Warning: Downscale factor " << downscaleFactor 
+                  << " would result in image size " << newWidth << "x" << newHeight 
+                  << " which is too small. Using original image." << std::endl;
+        return image;
+    }
+
+    try {
+        // Rescale the image
+        cv::Mat resized;
+        cv::resize(cImg, resized, cv::Size(newWidth, newHeight), 0.0, 0.0, cv::INTER_AREA);
+        
+        if (resized.empty() || resized.cols == 0 || resized.rows == 0 || resized.channels() != 3) {
+            throw std::runtime_error("Resize operation produced invalid image");
+        }
+
+>>>>>>> Stashed changes
         // Convert to tensor with validation
         torch::Tensor t;
         try {
