@@ -110,12 +110,26 @@ inline __device__ float4 transform_4x4(const float *mat, const float3 p) {
 }
 
 inline __device__ float2 project_pix(
-    const float *mat, const float3 p, const dim3 img_size, const float2 pp
+    const float *mat, const float3 p, const dim3 img_size, const float2 pp,
+    bool isFisheye = false
 ) {
     // ROW MAJOR mat
     float4 p_hom = transform_4x4(mat, p);
     float rw = 1.f / (p_hom.w + 1e-6f);
     float3 p_proj = {p_hom.x * rw, p_hom.y * rw, p_hom.z * rw};
+    
+    if (isFisheye) {
+        // For fisheye projection, we need to convert to polar coordinates
+        float r = sqrtf(p_proj.x * p_proj.x + p_proj.y * p_proj.y);
+        float theta = atanf(r); // r = f * theta in equidistant model
+        
+        if (r > 0) {
+            float factor = theta / r;
+            p_proj.x *= factor;
+            p_proj.y *= factor;
+        }
+    }
+    
     return {
         ndc2pix(p_proj.x, img_size.x, pp.x), ndc2pix(p_proj.y, img_size.y, pp.y)
     };

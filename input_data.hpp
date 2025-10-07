@@ -8,7 +8,7 @@
 #include <opencv2/calib3d.hpp>
 #include <torch/torch.h>
 
-enum CameraType { Perspective };
+enum CameraType { Perspective, Fisheye };
 struct Camera{
     int id = -1;
     int width = 0;
@@ -20,6 +20,7 @@ struct Camera{
     float k1 = 0;
     float k2 = 0;
     float k3 = 0;
+    float k4 = 0;  // Used for fisheye distortion
     float p1 = 0;
     float p2 = 0;
     torch::Tensor camToWorld;
@@ -35,7 +36,7 @@ struct Camera{
         camToWorld(camToWorld), filePath(filePath) {}
     torch::Tensor getIntrinsicsMatrix();
     bool hasDistortionParameters();
-    std::vector<float> undistortionParameters();
+    std::vector<float> undistortionParameters(bool fisheye = false);
     torch::Tensor getImage(int downscaleFactor);
 
     void loadImage(float downscaleFactor);

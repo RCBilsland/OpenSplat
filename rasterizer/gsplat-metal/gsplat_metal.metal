@@ -273,13 +273,51 @@ inline bool compute_cov2d_bounds(
     return true;
 }
 
+struct FisheyeParams {
+    float k1, k2, k3, k4;
+};
+
+inline float2 distort_point_fisheye(float2 normalizedPt, const FisheyeParams params) {
+    float x = normalizedPt.x;
+    float y = normalizedPt.y;
+    float r = sqrt(x*x + y*y);
+    
+    if (r > 0) {
+        float theta = atan(r);
+        float theta2 = theta * theta;
+        float theta4 = theta2 * theta2;
+        float theta6 = theta4 * theta2;
+        float theta8 = theta4 * theta4;
+        
+        float theta_d = theta * (1 + params.k1*theta2 + params.k2*theta4 + 
+                                   params.k3*theta6 + params.k4*theta8);
+        float scale = theta_d / r;
+        
+        return float2(x * scale, y * scale);
+    }
+    return normalizedPt;
+}
+
 inline float2 project_pix(
-    constant float *mat, const float3 p, const uint2 img_size, const float2 pp
+    constant float *mat, const float3 p, const uint2 img_size, const float2 pp,
+    bool isFisheye = false, constant FisheyeParams *fisheyeParams = nullptr
 ) {
     // ROW MAJOR mat
     float4 p_hom = transform_4x4(mat, p);
     float rw = 1.f / (p_hom.w + 1e-6f);
     float3 p_proj = {p_hom.x * rw, p_hom.y * rw, p_hom.z * rw};
+
+    if (isFisheye && fisheyeParams != nullptr) {
+        // Convert to normalized coordinates
+        float2 normalizedPt = float2(p_proj.x, p_proj.y);
+        
+        // Apply fisheye distortion with full distortion model
+        float2 distortedPt = distort_point_fisheye(normalizedPt, *fisheyeParams);
+        
+        p_proj.x = distortedPt.x;
+        p_proj.y = distortedPt.y;
+    }
+    
     return {
         ndc2pix(p_proj.x, (int)img_size.x, pp.x), ndc2pix(p_proj.y, (int)img_size.y, pp.y)
     };

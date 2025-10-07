@@ -115,9 +115,24 @@ int main(int argc, char *argv[]){
     try{
         InputData inputData = inputDataFromX(projectRoot, colmapImageSourcePath);
 
-        parallel_for(inputData.cameras.begin(), inputData.cameras.end(), [&downScaleFactor](Camera &cam){
-            cam.loadImage(downScaleFactor);
-        });
+        // Load images sequentially for better error tracking
+        std::cout << "Loading " << inputData.cameras.size() << " images..." << std::endl;
+        for (auto& cam : inputData.cameras) {
+            try {
+                cam.loadImage(downScaleFactor);
+                // Verify the loaded image is valid
+                if (cam.image.numel() == 0 || cam.image.dim() != 3 || 
+                    cam.image.size(0) == 0 || cam.image.size(1) == 0 || cam.image.size(2) != 3) {
+                    throw std::runtime_error("Invalid image tensor dimensions after loading");
+                }
+                std::cout << "Verified tensor for " << cam.filePath 
+                          << " dimensions: [" << cam.image.size(0) << ", "
+                          << cam.image.size(1) << ", " << cam.image.size(2) << "]" << std::endl;
+            } catch (const std::exception& e) {
+                throw std::runtime_error("Failed to load image " + cam.filePath + ": " + e.what());
+            }
+        }
+        std::cout << "All images loaded successfully." << std::endl;
 
         // Withhold a validation camera if necessary
         auto t = inputData.getCameras(validate, valImage);

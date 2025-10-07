@@ -13,6 +13,31 @@
 
 using namespace torch::indexing;
 
+struct FisheyeParams {
+    float k1, k2, k3, k4;
+};
+
+// Helper function to apply fisheye distortion
+torch::Tensor distortPointFisheye(const torch::Tensor& normalizedPts, const FisheyeParams& params) {
+    torch::Tensor x = normalizedPts.index({torch::indexing::Slice(), 0});
+    torch::Tensor y = normalizedPts.index({torch::indexing::Slice(), 1});
+    torch::Tensor r = torch::sqrt(x*x + y*y);
+    
+    torch::Tensor theta = torch::atan(r);
+    torch::Tensor theta2 = theta * theta;
+    torch::Tensor theta4 = theta2 * theta2;
+    torch::Tensor theta6 = theta4 * theta2;
+    torch::Tensor theta8 = theta4 * theta4;
+    
+    torch::Tensor theta_d = theta * (1.0f + params.k1*theta2 + params.k2*theta4 + 
+                                            params.k3*theta6 + params.k4*theta8);
+    
+    torch::Tensor scale = torch::where(r > 0, theta_d / r, 
+                                     torch::ones_like(r, torch::TensorOptions().dtype(torch::kFloat32)));
+    
+    return torch::stack({x * scale, y * scale}, -1);
+}
+
 torch::Tensor quatToRot(const torch::Tensor &quat){
     auto u = torch::unbind(torch::nn::functional::normalize(quat, torch::nn::functional::NormalizeFuncOptions().dim(-1)), -1);
     torch::Tensor w = u[0];
@@ -36,7 +61,6 @@ torch::Tensor quatToRot(const torch::Tensor &quat){
             1.0 - 2.0 * (x.pow(2) + y.pow(2))
         }, -1)
     }, -2);
-    
 }
 
 std::tuple<
